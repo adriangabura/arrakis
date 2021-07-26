@@ -1,0 +1,144 @@
+version: "3"
+
+services:  
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.10.2
+    container_name: elasticsearch
+    hostname: elasticsearch
+    restart: unless-stopped
+    environment:
+      - bootstrap.memory_lock=true
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - cluster.routing.allocation.disk.threshold_enabled=false
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - xpack.security.enabled=true
+      - xpack.security.authc.api_key.enabled=true
+      - xpack.license.self_generated.type=trial
+    networks:
+      - hapnet
+
+  rabbitmq:
+    image: rabbitmq:3.8-management
+    container_name: rabbitmq
+    hostname: rabbitmq
+    restart: unless-stopped
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+    networks:
+      - hapnet
+
+  mysql:
+    image: mysql:8
+    container_name: mysql
+    hostname: mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    networks:
+      - hapnet
+
+  webserver:
+    build:
+      context: ./bin/apache
+    container_name: webserver
+    hostname: webserver
+    restart: unless-stopped
+    environment:
+      - MAGENTO_PUBLIC_KEY=${MAGENTO_PUBLIC_KEY}
+      - MAGENTO_PRIVATE_KEY=${MAGENTO_PRIVATE_KEY}
+      - PROJECT_NAME=${PROJECT_NAME:-project}
+      - BASE_URL=https://${DOMAIN}
+      - MAGENTO_ADMIN_USER=${MAGENTO_ADMIN_USER}
+      - MAGENTO_ADMIN_PASSWORD=${MAGENTO_ADMIN_PASSWORD}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - ./server_files:/var/www/html
+    depends_on:
+      - "elasticsearch"
+      - "rabbitmq"
+      - "mysql"
+      - "php-fpm"
+    networks:
+      - hapnet
+      - default
+  
+  php-fpm:
+    build:
+      context: ./bin/php
+    user: www-data
+    container_name: php-fpm
+    hostname: php-fpm
+    restart: unless-stopped
+    volumes: 
+      - ./server_files:/var/www/html
+    networks:
+      - hapnet
+    
+  varnish:
+    build:
+      context: ./bin/varnish
+    container_name: varnish
+    hostname: varnish
+    restart: unless-stopped
+    depends_on: 
+      - "webserver"
+    networks:
+      - hapnet
+
+  certbot:
+    build:
+      context: ./bin/certbot/
+    container_name: "certbot"
+    hostname: "certbot"
+    #entrypoint: "/bin/sh -c 'trap exit TERM; while :; do . /etc/scripts/renew-certificates.sh ; sleep 12h & wait $${!}; done;'"
+    #entrypoint: "/bin/sh -c 'source /etc/scripts/create-certificates.sh'"
+    entrypoint: "gosu certbot /bin/bash -c 'source /etc/scripts/create-certificates.sh'"
+    environment:
+      - CERTBOT_PORT=${CERTBOT_PORT:-380}
+      - DOMAIN=${DOMAIN}
+      - EMAIL=${EMAIL}
+      - STAGING=${STAGING:-true}
+      - FORCE_RENEWAL=${FORCE_RENEWAL:-false}
+    restart: unless-stopped
+    volumes:
+      - certificates:/etc/letsencrypt
+    networks:
+      - default
+      - hapnet
+  
+  haproxy:
+    build:
+      context: ./bin/haproxy
+    container_name: haproxy
+    hostname: haproxy
+    restart: unless-stopped
+    volumes:
+      - certificates:/usr/local/etc/haproxy/certificates #:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on: 
+      - "varnish"
+    networks:
+      - hapnet
+      - default
+
+volumes:
+  certificates:
+    external: true
+  server_files:
+
+networks:
+  hapnet:
+    name: hapnet
+    external: true
